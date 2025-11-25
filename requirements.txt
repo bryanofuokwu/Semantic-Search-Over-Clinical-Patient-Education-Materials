@@ -1,0 +1,23 @@
+# requirements.txt
+
+# Core ML / embeddings
+sentence-transformers==2.7.0
+numpy>=1.23.0
+pandas>=1.5.0
+pyarrow>=12.0.0
+
+# Vector search
+faiss-cpu>=1.7.4
+
+# API
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# Utilities
+tqdm>=4.66.0
+
+# NOTE:
+# - Install PyTorch with CUDA separately, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu124
+#
+# to match your CUDA toolkit and GPU.

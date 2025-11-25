@@ -1,0 +1,33 @@
+# configs/config.yaml
+
+project:
+  name: medu-search
+  description: Semantic search over synthetic clinical patient education materials.
+
+data:
+  raw_path: data/raw/patient_education.parquet
+  doc_processed_path: data/processed/patient_education_full.parquet
+  chunk_processed_path: data/processed/patient_education_chunks.parquet
+
+chunking:
+  chunk_size_chars: 1200        # max characters per chunk
+  chunk_overlap_chars: 200      # overlap between chunks
+
+embedding:
+  model_name: sentence-transformers/all-MiniLM-L6-v2
+  device: auto                  # auto | cuda | cpu
+  batch_size: 256
+
+index:
+  index_dir: data/index
+  embeddings_filename_template: embeddings_{device}.npy
+  faiss_index_path: data/index/faiss_index_flatip.bin
+  chunk_metadata_path: data/index/chunk_metadata.parquet
+
+metrics:
+  embedding_benchmarks_path: metrics/embedding_benchmarks.json
+
+api:
+  host: 0.0.0.0
+  port: 8000
+  reload: true
