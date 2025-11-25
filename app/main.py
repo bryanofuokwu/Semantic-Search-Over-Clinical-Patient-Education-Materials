@@ -1,5 +1,7 @@
 import os
 import subprocess
+import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
 
@@ -29,6 +31,48 @@ DEFAULT_TOP_K = 5
 
 
 # -----------------------------
+# Startup / Shutdown
+# -----------------------------
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    global model, index, meta_df, device_str
+    
+    try:
+        # Disable multiprocessing to avoid issues in web server context
+        os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        os.environ["OMP_NUM_THREADS"] = "1"
+        
+        # 1) Run pipeline if needed
+        run_full_pipeline_if_needed()
+
+        # 2) Select device for query-time embeddings
+        device_str = select_device()
+
+        # 3) Load model, index, metadata
+        print("[INFO] Loading model, index, and metadata...")
+        model = load_model()
+        # Ensure model is in eval mode
+        if hasattr(model, 'eval'):
+            model.eval()
+        index = load_faiss_index(FAISS_INDEX_PATH)
+        meta_df = load_metadata(METADATA_PATH)
+
+        print("[INFO] API startup complete.")
+    except Exception as e:
+        print(f"[ERROR] Startup failed: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+    
+    yield
+    
+    # Shutdown (cleanup if needed)
+    print("[INFO] Shutting down...")
+
+
+# -----------------------------
 # FastAPI app
 # -----------------------------
 
@@ -41,6 +85,7 @@ app = FastAPI(
         "if no index is found."
     ),
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 
@@ -86,6 +131,7 @@ model: SentenceTransformer = None
 index: faiss.Index = None
 meta_df: pd.DataFrame = None
 device_str: str = "cpu"
+_model_lock = threading.Lock()  # Lock for thread-safe model encoding
 
 
 # -----------------------------
@@ -166,7 +212,9 @@ def select_device() -> str:
 
 def load_model() -> SentenceTransformer:
     print(f"[INFO] Loading SentenceTransformer model: {MODEL_NAME}")
-    m = SentenceTransformer(MODEL_NAME)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    m = SentenceTransformer(MODEL_NAME, device=device)
+    print(f"[INFO] Model loaded on device: {device}")
     return m
 
 
@@ -192,26 +240,6 @@ def load_metadata(path: Path) -> pd.DataFrame:
     return df
 
 
-# -----------------------------
-# Startup event
-# -----------------------------
-
-@app.on_event("startup")
-def on_startup():
-    global model, index, meta_df, device_str
-
-    # 1) Run pipeline if needed
-    run_full_pipeline_if_needed()
-
-    # 2) Select device for query-time embeddings
-    device_str = select_device()
-
-    # 3) Load model, index, metadata
-    model = load_model()
-    index = load_faiss_index(FAISS_INDEX_PATH)
-    meta_df = load_metadata(METADATA_PATH)
-
-    print("[INFO] API startup complete.")
 
 
 # -----------------------------
@@ -222,17 +250,28 @@ def embed_query(text: str) -> np.ndarray:
     """
     Embed a single query string using the global model on the selected device.
     Returns a (1, dim) float32 numpy array normalized to unit length.
+    Thread-safe.
     """
     if model is None:
         raise RuntimeError("Model is not initialized.")
 
-    emb = model.encode(
-        [text],
-        device=device_str,
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-        show_progress_bar=False,
-    )
+    # Use lock to ensure thread-safe encoding
+    # Disable multiprocessing to avoid issues in web server context
+    with _model_lock:
+        try:
+            emb = model.encode(
+                [text],
+                device=device_str,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+                batch_size=1,  # Use small batch size
+            )
+        except Exception as e:
+            print(f"[ERROR] Embedding failed: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            raise
     return emb.astype("float32")
 
 
@@ -290,6 +329,48 @@ def health():
     }
 
 
+@app.get("/test-embed")
+def test_embed():
+    """
+    Test endpoint to check if embedding works.
+    """
+    try:
+        if model is None:
+            return {"error": "Model not loaded", "model_is_none": True}
+        
+        print("[TEST] Starting embedding test...")
+        test_query = "test query"
+        print(f"[TEST] Query: {test_query}")
+        print(f"[TEST] Device: {device_str}")
+        print(f"[TEST] Model device: {next(model.parameters()).device if hasattr(model, 'parameters') else 'unknown'}")
+        
+        # Try direct model call first
+        print("[TEST] Calling model.encode directly...")
+        emb = model.encode(
+            [test_query],
+            device=device_str,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        print(f"[TEST] Embedding successful: {emb.shape}")
+        
+        return {
+            "status": "ok",
+            "query": test_query,
+            "embedding_shape": list(emb.shape),
+            "embedding_dtype": str(emb.dtype),
+        }
+    except Exception as e:
+        print(f"[TEST ERROR] {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "error": str(e),
+            "type": type(e).__name__,
+        }
+
+
 @app.post("/search", response_model=SearchResponse)
 def search(request: SearchRequest):
     """
@@ -299,47 +380,58 @@ def search(request: SearchRequest):
     - Uses FAISS to retrieve top-k most similar chunks.
     - Applies optional filters (condition, category, min_score).
     """
-    if index is None or model is None or meta_df is None:
-        raise RuntimeError("Service not fully initialized. Check startup logs.")
+    try:
+        if index is None or model is None or meta_df is None:
+            raise RuntimeError("Service not fully initialized. Check startup logs.")
 
-    query = request.query.strip()
-    if not query:
-        return SearchResponse(query=query, k=request.k, device=device_str, results=[])
+        query = request.query.strip()
+        if not query:
+            return SearchResponse(query=query, k=request.k, device=device_str, results=[])
 
-    # 1. Embed query
-    query_emb = embed_query(query)
+        # 1. Embed query
+        query_emb = embed_query(query)
 
-    # 2. FAISS search
-    k = max(1, request.k)
-    distances, indices = index.search(query_emb, k)  # shapes: (1, k)
-    distances = distances[0]
-    indices = indices[0]
+        # 2. FAISS search
+        k = max(1, min(request.k, index.ntotal))  # Don't search for more than available
+        distances, indices = index.search(query_emb, k)  # shapes: (1, k)
+        distances = distances[0]
+        indices = indices[0]
 
-    # 3. Apply filters
-    keep_positions = apply_filters(indices, distances, request.filters)
-    results: List[SearchResult] = []
+        # 3. Apply filters
+        keep_positions = apply_filters(indices, distances, request.filters)
+        results: List[SearchResult] = []
 
-    for pos in keep_positions:
-        idx = int(indices[pos])
-        score = float(distances[pos])
+        for pos in keep_positions:
+            idx = int(indices[pos])
+            score = float(distances[pos])
 
-        row = meta_df.iloc[idx]
+            # Validate index bounds
+            if idx < 0 or idx >= len(meta_df):
+                print(f"[WARNING] Invalid index {idx}, skipping")
+                continue
 
-        result = SearchResult(
-            doc_id=int(row["doc_id"]),
-            chunk_id=int(row["chunk_id"]),
-            condition=str(row["condition"]),
-            category=str(row.get("category", "")) if "category" in row else None,
-            title=str(row["title"]),
-            reading_level=str(row.get("reading_level", "")) if "reading_level" in row else None,
-            score=score,
-            chunk_text=str(row["chunk_text"]),
+            row = meta_df.iloc[idx]
+
+            result = SearchResult(
+                doc_id=int(row["doc_id"]),
+                chunk_id=int(row["chunk_id"]),
+                condition=str(row["condition"]),
+                category=str(row.get("category", "")) if "category" in row else None,
+                title=str(row["title"]),
+                reading_level=str(row.get("reading_level", "")) if "reading_level" in row else None,
+                score=score,
+                chunk_text=str(row["chunk_text"]),
+            )
+            results.append(result)
+
+        return SearchResponse(
+            query=query,
+            k=k,
+            device=device_str,
+            results=results,
         )
-        results.append(result)
-
-    return SearchResponse(
-        query=query,
-        k=k,
-        device=device_str,
-        results=results,
-    )
+    except Exception as e:
+        print(f"[ERROR] Search failed: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
