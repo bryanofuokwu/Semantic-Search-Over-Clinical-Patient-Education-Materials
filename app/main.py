@@ -8,7 +8,15 @@ from typing import List, Optional
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from config import BASE_DIR, EMBEDDING_MODEL_NAME, FAISS_INDEX_PATH, METADATA_PATH
+from config import (
+    BASE_DIR,
+    EMBEDDING_MODEL_NAME,
+    FAISS_INDEX_PATH,
+    METADATA_PATH,
+    SCRAPE_MAX_TOPICS,
+    SCRAPE_DELAY,
+    USE_SCRAPED_DATA,
+)
 from services.filter_service import FilterService, SearchFilters as ServiceSearchFilters
 from services.index_service import IndexService
 from services.model_service import ModelService
@@ -36,15 +44,34 @@ def run_full_pipeline_if_needed() -> None:
     (BASE_DIR / "data" / "index").mkdir(parents=True, exist_ok=True)
     (BASE_DIR / "metrics").mkdir(parents=True, exist_ok=True)
 
-    # 1) Generate synthetic data
-    cmd_generate = [
-        "python",
-        str(BASE_DIR / "pipelines" / "generate_data.py"),
-        "--n_docs",
-        "500",
-    ]
-    print(f"[PIPELINE] Running: {' '.join(cmd_generate)}")
-    subprocess.run(cmd_generate, check=True)
+    # 1) Scrape or generate data
+    raw_data_path = BASE_DIR / "data" / "raw" / "patient_education.parquet"
+    
+    if USE_SCRAPED_DATA and not raw_data_path.exists():
+        print("[PIPELINE] Scraping health data from WebMD...")
+        cmd_scrape = [
+            "python",
+            str(BASE_DIR / "pipelines" / "scrape_webmd.py"),
+            "--output",
+            str(raw_data_path),
+        ]
+        if SCRAPE_MAX_TOPICS:
+            cmd_scrape.extend(["--max-topics", str(SCRAPE_MAX_TOPICS)])
+        cmd_scrape.extend(["--delay", str(SCRAPE_DELAY)])
+        print(f"[PIPELINE] Running: {' '.join(cmd_scrape)}")
+        subprocess.run(cmd_scrape, check=True)
+    elif not raw_data_path.exists():
+        print("[PIPELINE] Generating synthetic data...")
+        cmd_generate = [
+            "python",
+            str(BASE_DIR / "pipelines" / "generate_data.py"),
+            "--n_docs",
+            "500",
+        ]
+        print(f"[PIPELINE] Running: {' '.join(cmd_generate)}")
+        subprocess.run(cmd_generate, check=True)
+    else:
+        print(f"[PIPELINE] Raw data already exists at {raw_data_path}, skipping data generation/scraping.")
 
     # 2) Preprocess & chunk
     cmd_preprocess = [

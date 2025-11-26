@@ -15,3 +15,8 @@ RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 RERANKER_TOP_K = 20  # Retrieve more candidates for reranking
 DEFAULT_RESULTS_COUNT = 1  # Always return top-1 result
 
+# Data scraping configuration
+SCRAPE_MAX_TOPICS = None  # None = scrape all topics, or set a number to limit
+SCRAPE_DELAY = 1.0  # Delay between requests in seconds (be respectful)
+USE_SCRAPED_DATA = True  # Use scraped data instead of synthetic data
+

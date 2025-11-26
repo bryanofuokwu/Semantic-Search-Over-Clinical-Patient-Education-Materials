@@ -50,7 +50,7 @@ def build_full_text_column(df: pd.DataFrame) -> pd.DataFrame:
             row["when_to_seek_help"],
             "",
             "Frequently Asked Questions:",
-            row["faq"],
+            row.get("faq", ""),  # Handle missing FAQ field gracefully
         ]
         return "\n".join(parts)
 

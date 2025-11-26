@@ -3,7 +3,7 @@ Semantic Search Over Clinical Patient Education Materials (CUDA-Accelerated)
 
 MeduSearch is an end-to-end semantic search project that:
 
-- Generates **synthetic clinical patient education materials** (non-diagnostic, plain-language).
+- **Scrapes real health data** from WebMD (or generates synthetic data as fallback).
 - Preprocesses and **chunks** long documents into smaller units.
 - Uses **SentenceTransformers + PyTorch (CUDA)** to compute embeddings on a GPU.
 - Indexes vectors with **FAISS** for fast similarity search.
@@ -39,6 +39,7 @@ medu-search/
 ├── app/
 │   └── main.py                      # FastAPI application (API routes only)
 ├── services/                        # Service layer (business logic)
+│   ├── scraper_service.py           # Web scraping service for health data
 │   ├── model_service.py             # ML model management (embedding + reranker)
 │   ├── index_service.py             # FAISS index and metadata management
 │   ├── filter_service.py            # Search result filtering
@@ -53,7 +54,8 @@ medu-search/
 ├── metrics/
 │   └── embedding_benchmarks.json   # CPU / CUDA embedding benchmarks
 ├── pipelines/
-│   ├── generate_data.py             # synth patient education documents
+│   ├── scrape_webmd.py              # scrape health data from WebMD
+│   ├── generate_data.py             # synth patient education documents (fallback)
 │   ├── preprocess.py                # build full_text and chunk into smaller pieces
 │   └── embed_and_index.py           # CUDA embeddings + FAISS index build
 ├── requirements.txt
@@ -114,7 +116,32 @@ pip install torch --index-url https://download.pytorch.org/whl/cu124
 # Start the FastAPI server
 uvicorn app.main:app --reload
 
-# The API will automatically run the full pipeline on first startup if no index exists
+# The API will automatically:
+# 1. Scrape health data from WebMD (if enabled in config.py)
+# 2. Preprocess and chunk the data
+# 3. Build embeddings and FAISS index
+# 4. Start serving search requests
+```
+
+### Data Collection
+
+By default, the system scrapes real health data from [WebMD](https://www.webmd.com/a-to-z-guides/health-topics) at startup. You can configure this in `config.py`:
+
+- `USE_SCRAPED_DATA = True` - Use scraped data (default) or synthetic data
+- `SCRAPE_MAX_TOPICS = None` - Limit number of topics (None = all topics)
+- `SCRAPE_DELAY = 1.0` - Delay between requests (be respectful)
+
+You can also run the scraping pipeline manually:
+
+```bash
+# Scrape all health topics
+python pipelines/scrape_webmd.py
+
+# Scrape limited number of topics
+python pipelines/scrape_webmd.py --max-topics 50
+
+# Custom output path and delay
+python pipelines/scrape_webmd.py --output data/raw/custom.parquet --delay 2.0
 ```
 
 ### API Usage
