@@ -37,15 +37,21 @@ The focus is on **GPU-accelerated embeddings (CUDA)**, **reranking for accuracy*
 ```text
 medu-search/
 ├── app/
-│   └── main.py                      # FastAPI app (semantic search API)
+│   └── main.py                      # FastAPI application (API routes only)
+├── services/                        # Service layer (business logic)
+│   ├── model_service.py             # ML model management (embedding + reranker)
+│   ├── index_service.py             # FAISS index and metadata management
+│   ├── filter_service.py            # Search result filtering
+│   └── search_service.py            # Main search orchestration
+├── config.py                        # Configuration constants
 ├── configs/
-│   └── config.yaml                  # Central config (paths, model, chunking, etc.)
+│   └── config.yaml                  # Pipeline configuration
 ├── data/
 │   ├── raw/                         # Synthetic source data (patient_education.parquet)
 │   ├── processed/                   # full_text docs + chunks
 │   └── index/                       # embeddings, FAISS index, metadata
 ├── metrics/
-│   └── embedding_benchmarks.json    # CPU / CUDA embedding benchmarks
+│   └── embedding_benchmarks.json   # CPU / CUDA embedding benchmarks
 ├── pipelines/
 │   ├── generate_data.py             # synth patient education documents
 │   ├── preprocess.py                # build full_text and chunk into smaller pieces
@@ -69,6 +75,20 @@ The search pipeline follows a two-stage retrieval and reranking approach:
    - Only the **top-1 result** is returned
 
 This hybrid approach combines the speed of FAISS with the accuracy of cross-encoder reranking.
+
+### Architecture
+
+The application follows a clean **service layer architecture**:
+
+- **API Layer** (`app/main.py`): FastAPI routes that handle HTTP requests/responses
+- **Service Layer** (`services/`): Business logic separated into focused services:
+  - `ModelService`: Manages embedding model and reranker initialization and operations
+  - `IndexService`: Handles FAISS index operations and metadata management
+  - `FilterService`: Applies search filters (condition, category, min_score)
+  - `SearchService`: Orchestrates the complete search flow (embed → retrieve → filter → rerank)
+- **Configuration** (`config.py`): Centralized configuration constants
+
+This separation ensures clean code organization, testability, and maintainability.
 
 ---
 
@@ -115,3 +135,19 @@ curl http://localhost:8000/health
 ```
 
 The search endpoint returns only the **top-1 most relevant result** after reranking.
+
+---
+
+## 🏗️ Architecture
+
+The codebase is organized with a **service layer pattern** for clean separation of concerns:
+
+- **API Layer**: Thin FastAPI routes that delegate to services
+- **Service Layer**: Reusable business logic components
+- **Configuration**: Centralized constants and settings
+
+This architecture makes the codebase:
+- ✅ **Testable**: Services can be unit tested independently
+- ✅ **Maintainable**: Clear separation between API and business logic
+- ✅ **Scalable**: Easy to add new features or modify existing ones
+- ✅ **Clean**: Each service has a single, well-defined responsibility
